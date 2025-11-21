@@ -1,0 +1,138 @@
+addpath('../3_link/')
+% trajectory optimization code for 3 link
+import casadi.*
+
+N = 50; % number of collocation points
+ds = 1/N; % time step
+
+% setup initial and final state
+% q0 = [0 - 0.039960169001852; 0.8 - 0.496472381958992; -pi/6; pi/2; -3 * pi/4];     % p = [x z th q1 q2]
+% q0 = [0 + 0.200000000000000; 0.8 - 0.053589838486225; -pi/6; pi/3; -pi/6];
+% q0 = [0 ; 0.8 - 0.107179676972449; -pi/6; pi/3; -pi/3];
+q0 = [0 ; 0.8 - 0.006844110900952; -pi/24; pi/12; -pi/12];
+% q0 = [0 ; 0.8; -pi/2; pi/2; 0];
+% q0 = [0; 0.8; -1*pi/6; pi/6; 0];
+% q0 = [0 ; 0.8; -(pi); pi ; 0];
+dq0 = [0; 0; 0; 0; 0];
+X0 = [q0; dq0];
+qf = [0; 0.8; 0; 0; 0];
+% qf = [0 ; 0.8; -pi; pi; 0];
+dqf = [0; 0; 0; 0; 0];
+Xf = [qf; dqf];
+
+opti = casadi.Opti();
+X = opti.variable(10, N+1);
+U = opti.variable(2, N+1);
+tf = opti.variable(1, 1);
+dt = tf*ds;
+
+obj = MX(0);
+
+opti.subject_to(X(1:5,1) == q0);
+dq0 = X(6:10,1);
+v0 = dFK_dq_foot(X(1:5,1)) * dq0;
+opti.subject_to(v0 == [0; 0]);
+% opti.subject_to(U(:,end) == 0);
+opti.subject_to(tf >= 1);
+opti.subject_to(tf <= 5);
+
+for kk = 1:N
+    Xk = X(:,kk);
+    qk = Xk(1:5, 1);
+    Uk = U(:,kk);
+    Xkp1 = X(:,kk+1);
+    Ukp1 = U(:,kk+1);
+    
+    obj = obj + 0.1 * (Uk'*Uk);                      % input expenditure
+    obj = obj + 0.1 * (Ukp1-Uk)' * (Ukp1-Uk);
+    obj = obj + 0.1 * FK_foot(qk)' * FK_foot(qk);
+
+    [fk, lambda_k] = dynamics(Xk, Uk);
+    [fkp1,lambda_kp1] = dynamics(Xkp1, Ukp1);
+    
+    % simpson method
+    Xm = 0.5*(Xk + Xkp1) + (dt/8)*(fk - fkp1);
+    Um = 0.5 * (Uk + Ukp1);
+    [fm,lambda_m] = dynamics(Xm, Um);
+    opti.subject_to(Xkp1 == Xk + (dt/6)*(fk + 4*fm + fkp1));
+
+    % currently use trapizoid method to enforce dynamic constraint
+    % opti.subject_to(Xkp1 == Xk + 1/2 * dt * (fk + fkp1));
+
+    % constraint the foot to stick to contact point, somehow have to set it
+    % as a soft constraint
+    % p_rf = FK_foot(qk);
+    % opti.subject_to(p_rf(2) == 0);
+    
+    
+
+    % constraint the contact force to always point upward
+    % opti.subject_to(lambda_k(2) >= 0);
+
+end
+
+obj = obj + tf'*tf;
+
+% opti.subject_to(X(1:5,end) == qf);
+% dqf = X(6:10,end);
+% vf = dFK_dq_foot(X(1:5,end)) * dqf;
+% opti.subject_to(vf == [0; 0]);
+opti.subject_to(X(:,end) == Xf);
+opti.set_initial(tf, 1);   
+opti.minimize(obj);
+opts = struct;
+opts.ipopt = struct;
+opts.ipopt.max_iter = 3000;
+
+opti.solver('ipopt', opts);
+opts.ipopt.hessian_approximation = 'limited-memory';
+sol = opti.solve();
+
+Xout = sol.value(X);
+Uout = sol.value(U);
+tf_val = sol.value(tf);
+tout = linspace(0,tf_val,N+1);
+
+%% visualize traj
+model = model_biped_3link();
+showmotion(model, tout, Xout(1:5, :));
+
+q_sol = Xout(1:5, :);
+dq_sol = Xout(6:10, :);
+h = tout(2) - tout(1);
+ddq_sol = zeros(size(dq_sol));
+for ii = 1:size(dq_sol, 1)
+    ddq_sol(ii, :) = gradient(dq_sol(ii, :), h);
+end
+
+%%dynamic feasibility check
+diff_ddq_vec = zeros(1, size(q_sol,2));
+rel_diff_ddq_vec = zeros(1, size(q_sol,2));
+for ii = 1:size(q_sol, 2)
+    curr_q = q_sol(:, ii);
+    curr_dq = dq_sol(:, ii);
+    curr_x = [curr_q; curr_dq];
+
+    curr_u = Uout(:, ii);
+
+    [dx_fwd_dym, lambda_dym] = dynamics(curr_x, curr_u);
+    ddq_fwd_dym = dx_fwd_dym(6:10);
+    ddq_fin_diff = ddq_sol(:, ii);
+    
+    diff = ddq_fin_diff - ddq_fwd_dym;
+    diff_ddq_vec(ii) = max(abs((diff(:))));
+    rel_diff_ddq_vec(ii) = max(abs((diff(:)))) / max(abs(ddq_fwd_dym(:)));
+
+end
+
+figure
+yyaxis left
+plot(tout, diff_ddq_vec)
+hold on;
+yyaxis right
+plot(tout, rel_diff_ddq_vec)
+legend("dynamic feasibility diff", "dynamic feasibility rel_diff")
+
+max(abs(Uout(:)))
+
+save("solved_traj.mat", "q_sol", "dq_sol", "ddq_sol", "Uout", "tout");
