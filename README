@@ -1,0 +1,21 @@
+## 📌 MuJoCo Models & Trajectory Optimization Scripts
+
+Hey team,
+
+All of my MuJoCo robot XML files are located here:
+
+arc-bridge/robot_assets/
+├── 3_link/
+│ ├── 3_link_model.xml
+│ └── 3_link_scene.xml
+└── 5_link/
+├── 5_link_model.xml
+└── 5_link_scene.xml
+
+
+Trajectory optimization (TO) scripts are under:
+Final_Proj/test/5link/
+
+
+The jumping TO entry point is:
+Final_Proj/test/5link/TO_jump_test.m
